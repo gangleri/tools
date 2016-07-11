@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/imports"
@@ -143,16 +144,9 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// parseFlags parses command line flags and returns the paths to process.
-// It's a var so that custom implementations can replace it in other files.
-var parseFlags = func() []string {
-	flag.Parse()
-	return flag.Args()
-}
-
 func gofmtMain() {
 	flag.Usage = usage
-	paths := parseFlags()
+	flag.Parse()
 
 	if options.TabWidth < 0 {
 		fmt.Fprintf(os.Stderr, "negative tabwidth %d\n", options.TabWidth)
@@ -160,25 +154,64 @@ func gofmtMain() {
 		return
 	}
 
-	if len(paths) == 0 {
+	if flag.NArg() == 0 {
 		if err := processFile("<standard input>", os.Stdin, os.Stdout, true); err != nil {
 			report(err)
 		}
 		return
 	}
 
+	paths := expandPaths()
+
 	for _, path := range paths {
-		switch dir, err := os.Stat(path); {
-		case err != nil:
+		if err := processFile(path, nil, os.Stdout, false); err != nil {
 			report(err)
-		case dir.IsDir():
-			walkDir(path)
-		default:
-			if err := processFile(path, nil, os.Stdout, false); err != nil {
-				report(err)
+		}
+	}
+}
+
+func expandPaths() (paths []string) {
+	if flag.NArg() == 0 {
+		paths = []string{"."}
+		return
+	}
+
+	dirs := map[string]bool{}
+
+	for i := 0; i < flag.NArg(); i++ {
+		path := flag.Arg(i)
+
+		if strings.HasSuffix(path, "/...") {
+			root := filepath.Dir(path)
+
+			_ = filepath.Walk(root, func(p string, i os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				if strings.HasSuffix(p, ".go") {
+					dirs[filepath.Clean(p)] = true
+				}
+
+				return nil
+			})
+		} else if path == "." {
+			g, _ := filepath.Glob("./*.go")
+
+			for _, f := range g {
+				dirs[filepath.Clean(f)] = true
 			}
 		}
 	}
+
+	paths = make([]string, 0, len(dirs))
+	for d := range dirs {
+		paths = append(paths, d)
+	}
+
+	sort.Strings(paths)
+
+	return
 }
 
 func diff(b1, b2 []byte) (data []byte, err error) {
